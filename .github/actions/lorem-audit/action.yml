@@ -64,8 +64,8 @@ runs:
       shell: bash
       working-directory: ${{ github.action_path }}/../../../
       run: |
-        if [ -f ".github/actions/lorem-audit/package.json" ]; then
-          cd .github/actions/lorem-audit && npm ci --prefer-offline
+        if [ -f "package.json" ]; then
+          npm ci --prefer-offline
         fi
 
     # Install target repo dependencies (if not already installed)
