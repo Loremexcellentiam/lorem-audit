@@ -1,0 +1,10 @@
+node_modules/
+.env
+.env.*
+!.env.example
+audit-report.json
+audit-report.md
+.gitleaks-report.json
+.lhci-report.json
+coverage/
+*.log

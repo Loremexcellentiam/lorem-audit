@@ -1,0 +1,287 @@
+# .github/workflows/deploy.yml
+# Lorem Governed Deploy — reusable across Node/Express + React + Next.js repos
+#
+# Environments required (Settings → Environments):
+#   dev        — no approval required
+#   staging    — no approval required, branch: staging
+#   production — required reviewer(s), branch: main
+#
+# Required repository secrets (Settings → Secrets → Actions):
+#   SSH_HOST        — VPS hostname or IP
+#   SSH_USER        — deploy user (e.g. deploy)
+#   SSH_PRIVATE_KEY — private key for deploy user
+#   SSH_PORT        — SSH port (default 22)
+#
+# Required environment secrets (per environment above):
+#   All keys listed in .env.example — set per environment
+
+name: Lorem Governed Deploy
+
+on:
+  push:
+    branches:
+      - develop
+      - staging
+      - main
+  pull_request:
+    branches:
+      - main
+      - staging
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+# ─── 1. AUDIT ────────────────────────────────────────────────────────────────
+jobs:
+  audit:
+    name: 'Audit (Rubric Score)'
+    runs-on: ubuntu-latest
+    outputs:
+      score:  ${{ steps.audit.outputs.score }}
+      status: ${{ steps.audit.outputs.status }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Lorem Audit
+        uses: ./.github/actions/lorem-audit
+        id: audit
+        with:
+          env: ${{ github.ref == 'refs/heads/main' && 'production' || github.ref == 'refs/heads/staging' && 'staging' || 'dev' }}
+          skip-quality: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+
+      # Gate: dev allows ≥ 70; staging + prod require ≥ 90
+      - name: Gate — enforce score threshold
+        run: |
+          SCORE="${{ steps.audit.outputs.score }}"
+          REF="${{ github.ref }}"
+          echo "Audit score: $SCORE/100 — ${{ steps.audit.outputs.status }}"
+
+          if [[ "$REF" == "refs/heads/develop" ]]; then
+            THRESHOLD=70
+          else
+            THRESHOLD=90
+          fi
+
+          if [ "$SCORE" -lt "$THRESHOLD" ]; then
+            echo "::error::DEPLOY BLOCKED — Score $SCORE/100 is below threshold of $THRESHOLD. See audit-report artifact for fixes."
+            exit 1
+          fi
+
+          echo "Score $SCORE/100 meets threshold of $THRESHOLD. Proceeding."
+
+# ─── 2. BUILD & TEST ─────────────────────────────────────────────────────────
+  build-test:
+    name: 'Build & Test'
+    runs-on: ubuntu-latest
+    needs: audit
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run tests
+        run: npm test -- --watchAll=false --forceExit --ci
+        env:
+          CI: true
+
+      - name: Build
+        run: npm run build
+        env:
+          NODE_ENV: production
+
+      # Cache build output for deploy jobs
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+          path: |
+            dist/
+            build/
+            out/
+            .next/
+          retention-days: 1
+
+# ─── 3. DEPLOY: DEV ──────────────────────────────────────────────────────────
+  deploy-dev:
+    name: 'Deploy → Dev'
+    runs-on: ubuntu-latest
+    needs: [audit, build-test]
+    if: github.ref == 'refs/heads/develop'
+    environment: dev
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+
+      - name: Deploy to Dev VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:        ${{ secrets.SSH_HOST }}
+          username:    ${{ secrets.SSH_USER }}
+          key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          port:        ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd /srv/${{ github.event.repository.name }}
+            git pull origin develop
+            npm ci --omit=dev
+            npm run build
+            pm2 restart ${{ github.event.repository.name }}-dev || pm2 start ecosystem.config.js --env dev
+            echo "Dev deploy complete: $(date)"
+
+      - name: Smoke test — Dev
+        run: |
+          sleep 5
+          ./scripts/smoke-test.sh "${{ vars.DEV_URL }}"
+
+# ─── 4. DEPLOY: STAGING ──────────────────────────────────────────────────────
+  deploy-staging:
+    name: 'Deploy → Staging'
+    runs-on: ubuntu-latest
+    needs: [audit, build-test]
+    if: github.ref == 'refs/heads/staging' && needs.audit.outputs.score >= 90
+    environment: staging
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            --build-arg NODE_ENV=staging \
+            -t ${{ github.event.repository.name }}:${{ github.sha }} \
+            -t ${{ github.event.repository.name }}:staging-latest \
+            .
+
+      - name: Deploy to Staging VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:        ${{ secrets.SSH_HOST }}
+          username:    ${{ secrets.SSH_USER }}
+          key:         ${{ secrets.SSH_PRIVATE_KEY }}
+          port:        ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd /srv/${{ github.event.repository.name }}
+            git pull origin staging
+            docker compose -f docker-compose.staging.yml pull
+            docker compose -f docker-compose.staging.yml up -d --remove-orphans
+            echo "Staging deploy complete: $(date)"
+
+      - name: Smoke test — Staging
+        run: |
+          sleep 10
+          ./scripts/smoke-test.sh "${{ vars.STAGING_URL }}"
+
+# ─── 5. DEPLOY: PRODUCTION ───────────────────────────────────────────────────
+  deploy-prod:
+    name: 'Deploy → Production'
+    runs-on: ubuntu-latest
+    needs: [audit, build-test]
+    if: github.ref == 'refs/heads/main' && needs.audit.outputs.score >= 90
+    environment:
+      name: production
+      url:  ${{ vars.PROD_URL }}
+    # ↑ GitHub will pause here for a required reviewer to approve
+    #   (configure in Settings → Environments → production → Required reviewers)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build
+        uses: actions/download-artifact@v4
+        with:
+          name: build-${{ github.sha }}
+
+      - name: Record pre-deploy state (for rollback)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key:      ${{ secrets.SSH_PRIVATE_KEY }}
+          port:     ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            cd /srv/${{ github.event.repository.name }}
+            git rev-parse HEAD > /tmp/pre-deploy-sha-${{ github.run_id }}
+            docker images --format "{{.ID}}" ${{ github.event.repository.name }}:prod-latest \
+              > /tmp/pre-deploy-image-${{ github.run_id }} 2>/dev/null || true
+            echo "Pre-deploy state recorded."
+
+      - name: Build Docker image (production)
+        run: |
+          docker build \
+            --build-arg NODE_ENV=production \
+            -t ${{ github.event.repository.name }}:${{ github.sha }} \
+            -t ${{ github.event.repository.name }}:prod-latest \
+            .
+
+      - name: Deploy to Production VPS
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key:      ${{ secrets.SSH_PRIVATE_KEY }}
+          port:     ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            cd /srv/${{ github.event.repository.name }}
+            git pull origin main
+            docker compose -f docker-compose.prod.yml up -d --remove-orphans
+            echo "Production deploy complete: $(date)"
+
+      - name: Smoke test — Production
+        id: smoke
+        run: |
+          sleep 15
+          ./scripts/smoke-test.sh "${{ vars.PROD_URL }}"
+        continue-on-error: true  # Don't suppress rollback step
+
+      - name: Rollback on smoke test failure
+        if: steps.smoke.outcome == 'failure'
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host:     ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key:      ${{ secrets.SSH_PRIVATE_KEY }}
+          port:     ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "Smoke test failed — initiating rollback"
+            cd /srv/${{ github.event.repository.name }}
+            PREV_SHA=$(cat /tmp/pre-deploy-sha-${{ github.run_id }} 2>/dev/null || echo "")
+            if [ -n "$PREV_SHA" ]; then
+              git checkout "$PREV_SHA"
+              docker compose -f docker-compose.prod.yml up -d --remove-orphans
+              echo "Rolled back to $PREV_SHA"
+            else
+              echo "No pre-deploy SHA recorded — manual rollback required"
+            fi
+
+      - name: Fail job if smoke test failed
+        if: steps.smoke.outcome == 'failure'
+        run: |
+          echo "::error::Smoke test failed. Rollback triggered. Check application logs."
+          exit 1

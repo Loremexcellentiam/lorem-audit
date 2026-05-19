@@ -1,0 +1,68 @@
+# docker-compose.staging.yml
+# Staging stack: backend (Express/Sequelize) + frontend (React/Next.js) + PostgreSQL
+
+version: '3.9'
+
+services:
+  # ── Database ───────────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${DB_NAME:-app_staging}
+      POSTGRES_USER:     ${DB_USER:-app}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}   # Required — set in GitHub Secrets
+    volumes:
+      - pgdata_staging:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-app}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Backend (Express + Sequelize) ──────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        NODE_ENV: staging
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV:    staging
+      PORT:        3000
+      DATABASE_URL: postgresql://${DB_USER:-app}:${DB_PASSWORD}@db:5432/${DB_NAME:-app_staging}
+      JWT_SECRET:   ${JWT_SECRET}
+      # Add all other vars from .env.example here
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Frontend (React SPA served by NGINX) ───────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend   # or Dockerfile.nextjs for Next.js
+      args:
+        NODE_ENV: staging
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:3000}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  pgdata_staging:

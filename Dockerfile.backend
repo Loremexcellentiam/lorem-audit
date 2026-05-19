@@ -1,0 +1,65 @@
+# Dockerfile.backend — Node.js Express + Sequelize ORM
+# Multi-stage build: build stage → production stage (no devDependencies)
+#
+# Build args:
+#   NODE_ENV    — staging | production (default: production)
+#   COMMIT_SHA  — injected by deploy pipeline for traceability
+
+ARG NODE_VERSION=20-alpine
+
+# ─── Stage 1: Build ──────────────────────────────────────────────────────────
+FROM node:${NODE_VERSION} AS builder
+
+ARG NODE_ENV=production
+ARG COMMIT_SHA=local
+
+WORKDIR /app
+
+# Install dependencies (including devDeps needed for build)
+COPY package*.json ./
+RUN npm ci
+
+# Copy source
+COPY . .
+
+# Build step (transpile TypeScript / bundle if applicable)
+RUN npm run build --if-present
+
+# ─── Stage 2: Production image ───────────────────────────────────────────────
+FROM node:${NODE_VERSION} AS production
+
+ARG NODE_ENV=production
+ARG COMMIT_SHA=local
+
+ENV NODE_ENV=${NODE_ENV}
+ENV COMMIT_SHA=${COMMIT_SHA}
+
+WORKDIR /app
+
+# Install only production dependencies
+COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+# Copy built app from builder stage
+COPY --from=builder /app/dist        ./dist
+COPY --from=builder /app/src         ./src
+# Copy Sequelize migrations and seeders
+COPY --from=builder /app/migrations  ./migrations
+COPY --from=builder /app/seeders     ./seeders
+COPY --from=builder /app/config      ./config
+
+# Security: run as non-root user
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+USER appuser
+
+# Expose the app port (matches your Express listen port)
+EXPOSE 3000
+
+# Health check — expects GET /health to return 200
+# Adjust path and interval to match your app
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+
+# Start the app
+CMD ["node", "dist/server.js"]
+# If not transpiled: CMD ["node", "src/server.js"]

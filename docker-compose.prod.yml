@@ -1,0 +1,80 @@
+# docker-compose.prod.yml
+# Production stack — same as staging with tighter resource limits and no exposed DB port
+
+version: '3.9'
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_DB:       ${DB_NAME}
+      POSTGRES_USER:     ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - pgdata_prod:/var/lib/postgresql/data
+    # No ports: exposed — DB only reachable internally
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        NODE_ENV: production
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV:     production
+      PORT:         3000
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      JWT_SECRET:   ${JWT_SECRET}
+    ports:
+      - "127.0.0.1:3000:3000"   # Bind to localhost only — NGINX proxy in front
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+      restart_policy:
+        condition: on-failure
+        max_attempts: 3
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        NODE_ENV: production
+        VITE_API_URL: ${VITE_API_URL}
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"   # If handling TLS inside container; otherwise terminate at host NGINX
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:80/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+
+volumes:
+  pgdata_prod:

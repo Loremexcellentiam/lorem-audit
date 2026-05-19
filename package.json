@@ -1,0 +1,33 @@
+{
+  "name": "lorem-audit",
+  "version": "1.0.0",
+  "description": "Automated CI/CD governance audit tool — scores repos 0-100 against production readiness rubric",
+  "main": "audit.js",
+  "bin": {
+    "lorem-audit": "./audit.js"
+  },
+  "scripts": {
+    "test": "jest --coverage",
+    "lint": "eslint .",
+    "audit:self": "node audit.js --repo . --env staging"
+  },
+  "dependencies": {
+    "@actions/artifact": "^2.1.7",
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0",
+    "@lhci/cli": "^0.14.0",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
+    "execa": "^5.1.1",
+    "node-fetch": "^2.7.0",
+    "serve": "^14.2.3"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0",
+    "jest": "^29.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
