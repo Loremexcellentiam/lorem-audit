@@ -13,7 +13,7 @@ inputs:
     default: '.'
 
   skip-quality:
-    description: 'Skip Lighthouse quality checks (faster, use for draft PRs)'
+    description: 'Skip Lighthouse quality checks'
     required: false
     default: 'false'
 
@@ -37,52 +37,50 @@ outputs:
     value: ${{ steps.run-audit.outputs.status }}
 
   passed:
-    description: 'Number of checks passed'
+    description: 'Passed checks'
     value: ${{ steps.run-audit.outputs.passed }}
 
   failed:
-    description: 'Number of checks failed'
+    description: 'Failed checks'
     value: ${{ steps.run-audit.outputs.failed }}
 
 runs:
-  using: 'composite'
+  using: "composite"
 
   steps:
-    # ─────────────────────────────────────────────
-    # Node setup (NO npm caching to avoid implicit installs)
-    # ─────────────────────────────────────────────
-    - name: Set up Node.js
+    # ─────────────────────────────
+    # Node setup
+    # ─────────────────────────────
+    - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
 
-    # ─────────────────────────────────────────────
-    # Install audit tool (SAFE - NO CI, NO STRICT RESOLUTION)
-    # ─────────────────────────────────────────────
-    - name: Install lorem-audit tool dependencies
+    # ─────────────────────────────
+    # Install audit tool deps
+    # ─────────────────────────────
+    - name: Install audit tool dependencies
       shell: bash
       working-directory: ${{ github.action_path }}
       run: |
         if [ -f "package.json" ]; then
-          echo "Installing audit tool dependencies (safe mode)"
-          npm install --legacy-peer-deps --no-audit --no-fund --no-package-lock
+          npm install --legacy-peer-deps --no-audit --no-fund
         fi
 
-    # ─────────────────────────────────────────────
-    # Install repo dependencies (SAFE MODE)
-    # ─────────────────────────────────────────────
+    # ─────────────────────────────
+    # Install repo deps safely
+    # ─────────────────────────────
     - name: Install repo dependencies
       shell: bash
       working-directory: ${{ inputs.repo }}
       run: |
         if [ -f "package.json" ]; then
-          echo "Installing repo dependencies (safe mode)"
-          npm install --legacy-peer-deps --no-audit --no-fund --no-package-lock
+          npm install --legacy-peer-deps --no-audit --no-fund
         fi
 
-    # ─────────────────────────────────────────────
-    # Run audit
-    # ─────────────────────────────────────────────
+    # ─────────────────────────────
+    # Run audit (FIXED PATH)
+    # ─────────────────────────────
     - name: Run Lorem Audit
       id: run-audit
       shell: bash
@@ -98,17 +96,17 @@ runs:
         [[ "${{ inputs.skip-quality }}" == "true" ]] && SKIP_QUALITY="--skip-quality"
         [[ "${{ inputs.skip-docker }}" == "true" ]] && SKIP_DOCKER="--skip-docker"
 
-        echo "Running audit in safe mode..."
+        echo "Running audit from: ${{ github.action_path }}"
 
-        node ${{ github.action_path }}/../../../audit.js \
+        node ${{ github.action_path }}/audit.js \
           --repo "${{ inputs.repo }}" \
           --env "${{ inputs.env }}" \
           $SKIP_QUALITY \
           $SKIP_DOCKER
 
-    # ─────────────────────────────────────────────
+    # ─────────────────────────────
     # Upload report
-    # ─────────────────────────────────────────────
+    # ─────────────────────────────
     - name: Upload audit report
       if: always()
       uses: actions/upload-artifact@v4
