@@ -1,16 +1,3 @@
-# .github/actions/lorem-audit/action.yml
-# Composite action — wraps the lorem-audit CLI for use in any workflow job.
-#
-# Usage in a workflow:
-#   - uses: ./.github/actions/lorem-audit
-#     id: audit
-#     with:
-#       env: staging
-#
-# Outputs:
-#   score  — integer 0–100
-#   status — PRODUCTION READY | FIX REQUIRED | REJECT
-
 name: 'Lorem Audit'
 description: 'Run the production readiness audit and output a scored report'
 
@@ -19,18 +6,22 @@ inputs:
     description: 'Target environment (staging | production | dev)'
     required: false
     default: 'staging'
+
   repo:
     description: 'Path to the repository to audit (relative to workspace)'
     required: false
     default: '.'
+
   skip-quality:
     description: 'Skip Lighthouse quality checks (faster, use for draft PRs)'
     required: false
     default: 'false'
+
   skip-docker:
     description: 'Skip Docker build check'
     required: false
     default: 'false'
+
   node-version:
     description: 'Node.js version to use'
     required: false
@@ -40,41 +31,58 @@ outputs:
   score:
     description: 'Numeric audit score (0–100)'
     value: ${{ steps.run-audit.outputs.score }}
+
   status:
     description: 'Audit status string'
     value: ${{ steps.run-audit.outputs.status }}
+
   passed:
     description: 'Number of checks passed'
     value: ${{ steps.run-audit.outputs.passed }}
+
   failed:
     description: 'Number of checks failed'
     value: ${{ steps.run-audit.outputs.failed }}
 
 runs:
   using: 'composite'
+
   steps:
+    # ─────────────────────────────────────────────
+    # Node setup (NO npm caching to avoid implicit installs)
+    # ─────────────────────────────────────────────
     - name: Set up Node.js
       uses: actions/setup-node@v4
       with:
         node-version: ${{ inputs.node-version }}
-        cache: 'npm'
 
-    # Install audit tool dependencies
-    - name: Install lorem-audit dependencies
+    # ─────────────────────────────────────────────
+    # Install audit tool (SAFE - NO CI, NO STRICT RESOLUTION)
+    # ─────────────────────────────────────────────
+    - name: Install lorem-audit tool dependencies
       shell: bash
-      working-directory: ${{ github.action_path }}/../../../
+      working-directory: ${{ github.action_path }}
       run: |
         if [ -f "package.json" ]; then
-          npm ci --prefer-offline
+          echo "Installing audit tool dependencies (safe mode)"
+          npm install --legacy-peer-deps --no-audit --no-fund --no-package-lock
         fi
 
-    # Install target repo dependencies (if not already installed)
+    # ─────────────────────────────────────────────
+    # Install repo dependencies (SAFE MODE)
+    # ─────────────────────────────────────────────
     - name: Install repo dependencies
       shell: bash
       working-directory: ${{ inputs.repo }}
-      run: npm ci --prefer-offline
+      run: |
+        if [ -f "package.json" ]; then
+          echo "Installing repo dependencies (safe mode)"
+          npm install --legacy-peer-deps --no-audit --no-fund --no-package-lock
+        fi
 
-    # Run the audit
+    # ─────────────────────────────────────────────
+    # Run audit
+    # ─────────────────────────────────────────────
     - name: Run Lorem Audit
       id: run-audit
       shell: bash
@@ -86,18 +94,21 @@ runs:
       run: |
         SKIP_QUALITY=""
         SKIP_DOCKER=""
-        [[ "${{ inputs.skip-quality }}" == "true" ]] && SKIP_QUALITY="--skip-quality"
-        [[ "${{ inputs.skip-docker }}"  == "true" ]] && SKIP_DOCKER="--skip-docker"
 
-        # Run audit — captures score/status as GitHub Actions outputs via @actions/core
+        [[ "${{ inputs.skip-quality }}" == "true" ]] && SKIP_QUALITY="--skip-quality"
+        [[ "${{ inputs.skip-docker }}" == "true" ]] && SKIP_DOCKER="--skip-docker"
+
+        echo "Running audit in safe mode..."
+
         node ${{ github.action_path }}/../../../audit.js \
           --repo "${{ inputs.repo }}" \
-          --env  "${{ inputs.env }}" \
-          $SKIP_QUALITY $SKIP_DOCKER || true
-        # Note: || true prevents the composite action from failing here —
-        #       the calling workflow's gate step controls the exit code logic.
+          --env "${{ inputs.env }}" \
+          $SKIP_QUALITY \
+          $SKIP_DOCKER
 
-    # Upload the report as an artifact
+    # ─────────────────────────────────────────────
+    # Upload report
+    # ─────────────────────────────────────────────
     - name: Upload audit report
       if: always()
       uses: actions/upload-artifact@v4
