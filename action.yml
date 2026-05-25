@@ -65,14 +65,14 @@ runs:
       working-directory: ${{ github.action_path }}/../../../
       run: |
         if [ -f "package.json" ]; then
-          npm install --legacy-peer-deps
+          npm install --legacy-peer-deps --no-audit --no-fund
         fi
 
     # Install target repo dependencies (if not already installed)
     - name: Install repo dependencies
       shell: bash
       working-directory: ${{ inputs.repo }}
-      run: npm install --legacy-peer-deps
+      run: npm install --legacy-peer-deps --no-audit --no-fund
 
     # Run the audit
     - name: Run Lorem Audit
